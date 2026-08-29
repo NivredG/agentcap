@@ -1,0 +1,10 @@
+runs/
+.agentcap/
+examples/*/sandbox/
+.vscode/
+.idea/
+.DS_Store
+
+# Rust
+/target/
+dist/

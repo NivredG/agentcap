@@ -1,0 +1,49 @@
+# Per-agent sandbox image for the goose CLI.
+#
+# Built once by `agentcap run --agent goose` (or eagerly via
+# `agentcap.sandbox.image_provisioning.ensure_image("goose")`). The
+# resulting image is mounted as the bwrap rootfs at run time — the
+# agent binary lives in the image, not on the host.
+#
+# Mirror of scripts/lima/agentcap-goose.yaml (same install command,
+# different runtime).
+
+FROM ubuntu:24.04
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates curl python3 python3-pip bzip2 xz-utils libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Goose's install script lands the binary in ``$HOME/.local/bin/goose``.
+# Run as root, then copy into /usr/local/bin so the agent is on PATH
+# regardless of which $HOME the runtime mounts. ``GOOSE_VERSION``
+# pins the *binary* (without it the install script would download
+# whatever upstream tags as ``stable``, drifting the goose version
+# baked into the image); the install script itself is still fetched
+# from the ``stable`` release tag and may change build-to-build.
+ARG GOOSE_VERSION=v1.36.0
+RUN curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh \
+        | GOOSE_VERSION="${GOOSE_VERSION}" CONFIGURE=false bash \
+ && install -m 0755 /root/.local/bin/goose /usr/local/bin/goose \
+ && command -v goose
+
+# Canonical Hub interaction tool. ``huggingface_hub[cli]`` ships the
+# ``hf`` binary used by skills, the orchestrator, and ad-hoc agent
+# commands (auth login, upload, model queries). Baked in every image
+# regardless of corpus — it's a small Python install (~50 MB) and
+# part of the standard agent ecosystem.
+RUN pip3 install --break-system-packages --no-cache-dir 'huggingface_hub[cli]' \
+ && command -v hf
+
+# Goose talks to an OpenAI-compat backend via env vars. The
+# in-process proxy URL comes from ``AGENTCAP_PROXY_URL`` at run
+# time (default = the in-process proxy on :8001); the entrypoint
+# script translates it into ``OPENAI_HOST``.
+ENV OPENAI_API_KEY=dummy \
+    GOOSE_PROVIDER=openai
+
+COPY agentcap-goose/agentcap-init.sh /usr/local/bin/agentcap-init
+COPY agentcap-goose/dump-traces.sh /usr/local/bin/dump-traces
+RUN chmod 0755 /usr/local/bin/agentcap-init /usr/local/bin/dump-traces
+ENTRYPOINT ["/usr/local/bin/agentcap-init"]

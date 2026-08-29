@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Drive the transformers-coding-session corpus through any registered
+# agent. The corpus is 30 open-ended planning/diagnostic prompts over
+# huggingface/transformers — see tasks.txt.
+#
+# Prereqs:
+#   1. An OpenAI-compat /v1 server on $UPSTREAM (default
+#      http://127.0.0.1:8000). Easiest: llama.cpp with a GGUF, e.g.
+#        GGUF_PATH=/path/to/model.gguf REASONING=off \
+#            ./scripts/start_llama_cpp_server.sh
+#   2. The agent binary on PATH (or wherever agentcap can find it).
+#
+# Usage:
+#   ./run.sh --agent <name> --model <id>
+#
+# Examples:
+#   ./run.sh --agent hermes --model Qwen/Qwen3-8B
+#   ./run.sh --agent pi --model qwen3.6-35b-a3b
+#   ./run.sh --agent goose --model gemma-4-26b
+#
+# Captures + run.json land under ``$HERE/.agentcap/<run-id>/`` (this
+# script pins AGENTCAP_WORKSPACE to the corpus dir so each corpus
+# keeps its own runs). ``./export.sh`` then picks them up.
+#
+# Env knobs:
+#   UPSTREAM   model server URL                http://127.0.0.1:8000
+#   TURNS      multi-turn count                4
+#   FOLLOWUP   continue | templates | synthesized   synthesized
+#   TIMEOUT    per-turn timeout in seconds     300
+#   TRANSFORMERS_CHECKOUT  path to a transformers git checkout; the
+#              script seeds <sandbox>/ as a detached ``git worktree``
+#              of it so corpus prompts have real code to ground in.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export AGENTCAP_WORKSPACE="$HERE"
+
+AGENT=""
+MODEL=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --agent) AGENT="$2"; shift 2 ;;
+        --model) MODEL="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '/^# Usage:/,/^set -euo/p' "$0" | sed 's/^# \?//; /^set -euo/d'
+            exit 0
+            ;;
+        *) echo "ERROR: unexpected arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ -z "$AGENT" || -z "$MODEL" ]]; then
+    echo "ERROR: --agent and --model are required. See: $0 --help" >&2
+    exit 2
+fi
+
+UPSTREAM="${UPSTREAM:-http://127.0.0.1:8000}"
+TURNS="${TURNS:-4}"
+FOLLOWUP="${FOLLOWUP:-synthesized}"
+TIMEOUT="${TIMEOUT:-300}"
+
+# Materialise a sandbox at $HERE/sandbox once; reused across reruns.
+if [[ -z "${TRANSFORMERS_CHECKOUT:-}" ]]; then
+    for c in "$HOME/transformers" "$HERE/transformers"; do
+        if [[ -d "$c/.git" || -f "$c/.git" ]]; then
+            TRANSFORMERS_CHECKOUT="$(cd "$c" && pwd)"
+            break
+        fi
+    done
+fi
+SANDBOX="$HERE/sandbox"
+if [[ ! -e "$SANDBOX/.git" ]]; then
+    if [[ -n "${TRANSFORMERS_CHECKOUT:-}" ]]; then
+        echo "seeding $SANDBOX from transformers worktree at $TRANSFORMERS_CHECKOUT" >&2
+        git -C "$TRANSFORMERS_CHECKOUT" worktree add --detach "$SANDBOX"
+    else
+        mkdir -p "$SANDBOX"
+        echo "WARNING: no transformers checkout found; sandbox will be empty." >&2
+        echo "         set TRANSFORMERS_CHECKOUT=<path> to seed it." >&2
+    fi
+fi
+
+agentcap run \
+    --agent     "$AGENT" \
+    --model     "$MODEL" \
+    --upstream  "$UPSTREAM" \
+    --sandbox   "$SANDBOX" \
+    --tasks     "$HERE/tasks.txt" \
+    --turns     "$TURNS" \
+    --followup  "$FOLLOWUP" \
+    --timeout   "$TIMEOUT"
+
+echo "done. captures land under $HERE/.agentcap/ (run 'agentcap ls' to list)."
+echo "next: $HERE/export.sh   # picks the most recent run and pushes"
